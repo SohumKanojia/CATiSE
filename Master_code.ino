@@ -356,6 +356,15 @@ void printSensorData() {
   }
 
   // Section 7: Temperature and Humidity
+  auto status = am2302.read();
+   Serial.print("\n\nstatus of sensor read(): ");
+   Serial.println(status);
+
+   Serial.print("Temperature: ");
+   Serial.println(am2302.get_Temperature());
+
+   Serial.print("Humidity:    ");
+   Serial.println(am2302.get_Humidity());
   
   Serial.println(F("======================================="));
 }
