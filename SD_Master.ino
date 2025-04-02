@@ -25,7 +25,7 @@
 #define CAMERA_DELAY 120000
 #define TIME_BUFFER_SIZE 30 // Increased buffer size for date/time
 #define GPS_I2C_ADDRESS 0x42 // Default u-blox address
-#define Frames_NUM 0x00 //Amount of photos taken
+#define FRAMES_NUM 0x00 //Amount of photos taken
 
 //Camera + SD Card constants
 
@@ -68,8 +68,6 @@ bool gpsInitialized = false;
 DateTime previous_time;
 
 void setup() {
-  uint8_t vid, pid;
-  uint8_t temp;
   // Initialize serial and I2C
   Serial.begin(115200); // Set to 115200 baud as requested
   Wire.begin();
@@ -143,9 +141,9 @@ void loop() {
 }
 
 bool CameraHealthCheck(){
-
+  uint8_t vid, pid;
+  uint8_t temp;
   //Test SPI Interface
-
   myCAM.write_reg(0x07, 0x80);
   delay(100);
   myCAM.write_reg(0x07, 0x00);
@@ -153,36 +151,35 @@ bool CameraHealthCheck(){
 
   //Check if the ArduCAM SPI bus is OK
   myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
-    temp = myCAM.read_reg(ARDUCHIP_TEST1);
-    if (temp != 0x55)
-    {
-      Serial.println(F("SPI interface Error!"));
+  temp = myCAM.read_reg(ARDUCHIP_TEST1);
+  if (temp != 0x55){
+
+    Serial.println(F("SPI interface Error!"));
+    delay(1000);
+    return false;
+  }
+  else {
+    Serial.println(F("SPI interface OK."));
+
+    //Ensure correcct camera module
+
+    myCAM.wrSensorReg8_8(0xff, 0x01);
+    myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
+    myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
+    if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))) {
+      Serial.println(F("ACK CMD Can't find OV2640 module!"));
       delay(1000);
       return false;
-    } 
-    else {
-      Serial.println(F("SPI interface OK."));
-
-      //Ensure correct camera module
-
-      myCAM.wrSensorReg8_8(0xff, 0x01);
-      myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
-      myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
-      if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))) {
-        Serial.println(F("ACK CMD Can't find OV2640 module!"));
-        delay(1000);
-        return false;
     }
-      else {
-        Serial.println(F("ACK CMD OV2640 detected.")); 
-        myCam.InitCam();
-        myCAM.flush_fifo();
-        myCAM.clear_fifo_flag();
-        myCam.write_reg(ARDUCHIP_FRAMES, FRAMES_NUM);
-        return true;
-      }
-      }
+    else{
+      Serial.println(F("ACK CMD OV2640 detected.")); 
+      myCAM.InitCAM();
+      myCAM.flush_fifo();
+      myCAM.clear_fifo_flag();
+      myCAM.write_reg(ARDUCHIP_FRAMES, FRAMES_NUM);
+      return true;
     }
+  }
 }
 
 uint8_t read_fifo_burst(ArduCAM myCAM)
@@ -559,9 +556,11 @@ void printSensorData() {
 
 void saveSensorData() {
   static int p = 0;
+  char str2[16];
+  File dataFile;
   p = p + 1;
   itoa(p, str2, 10);
-  strcat(str2, ".txt")
+  strcat(str2, ".txt");
   dataFile = SD.open(str2, O_WRITE | O_CREAT | O_TRUNC );
   if(!dataFile)
   {
