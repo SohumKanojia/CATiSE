@@ -1,124 +1,144 @@
 /* 
- * Main Mission Code V2.0 - Updated with u-blox GPS Library
- * Environmental Sensor Array with I2C Interface
- */
+ * Main Mission Code, satelite branch
+ * For Wiring Diagram and Extra Notes, See Wiring_and_Notes.txt
+ * User Defined Variables:
+  - MAIN_BAUD 
+  - MAIN_LOOP_DELAY
+*/
 
-#include <Wire.h>
-#include <RTClib.h>
-#include <Multichannel_Gas_GMXXX.h>
-#include <HP20x_dev.h>
-#include "DFRobot_OzoneSensor.h"
-#include <LTR390.h>
-#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // Updated GPS library
+// Libraries
+#include <IridiumSBD.h>                           // https://github.com/mikalhart/IridiumSBD
+#include <Wire.h>                                 // Included with Arduino
+#include <RTClib.h>                               // https://github.com/adafruit/RTClib
+#include <Multichannel_Gas_GMXXX.h>               // https://github.com/Seeed-Studio/Seeed_Arduino_MultiGas
+#include <HP20x_dev.h>                            // https://github.com/Seeed-Studio/Grove_Barometer_HP20x
+#include "DFRobot_OzoneSensor.h"                  // https://github.com/DFRobot/DFRobot_OzoneSensor
+#include <LTR390.h>                               // https://github.com/levkovigor/LTR390
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h> // https://github.com/sparkfun/SparkFun_u-blox_GNSS_Arduino_Library
 #include <AM2302-Sensor.h>
 
-// Define constants
+// I2C Intrerface Addresses
 #define I2C_ADDRESS_LTR390 0x53
 #define OZONE_ADDRESS OZONE_ADDRESS_3  // 0x70
 #define GAS_ADDRESS 0x08
-#define COLLECT_NUMBER 20  // Ozone data collection range (1-100)
-#define LOOP_DELAY 3000    // Main loop delay in ms
 #define TIME_BUFFER_SIZE 30 // Increased buffer size for date/time
 #define GPS_I2C_ADDRESS 0x42 // Default u-blox address
+#define IridiumSerial Serial3 // serial for satelite commmunication
 
-// Declare sensor objects
+// Declare Sensor objects
 RTC_DS3231 rtc;
+SFE_UBLOX_GNSS myGNSS;
 GAS_GMXXX<TwoWire> gas;
 HP20x_dev hp20x;
 DFRobot_OzoneSensor ozone;
 LTR390 ltr390(I2C_ADDRESS_LTR390);
-SFE_UBLOX_GNSS myGNSS; // Updated GPS object
-constexpr unsigned int SENSOR_PIN {7U};
+constexpr unsigned int SENSOR_PIN {7U}; // Pin 7 for Temperaute/Humidity
 AM2302::AM2302_Sensor am2302{SENSOR_PIN};
+IridiumSBD IridiumModem(IridiumSerial);
 
-// Function prototypes
+/* 
+  55 Byte Single Sensor Packet Structure (equal to one line of data)
+  The __attribyte__((packed)) command makes sure it is exactly 55 by eliminating padding by the compiler.
+  Furthermore, there are 3 bytes included in the final message (1 for packets count, and 2 for xor checksum)
+  Sizes: 
+  - uint8_t  : 8  Bits = 1 Byte
+  - uint16_t : 16 Bits = 2 Bytes
+  - uint32_t : 32 Bits = 4 Bytes
+  - float    : 32 Bits = 4 Bytes
+*/ 
+struct __attribute__((packed)) DataPacket {
+  // Time (3 Bytes)
+  uint8_t second;
+  uint8_t minute;
+  uint8_t hour;
+
+  // GPS (14 Bytes)
+  uint32_t latitude;
+  uint32_t longitude;
+  uint32_t altitude;
+  uint8_t satellites;
+  uint8_t fixtype;
+
+  // Sensors (38 Bytes)
+  uint32_t NO2;
+  uint32_t C2H5OH;
+  uint32_t VOC;
+  uint32_t CO;
+  uint16_t ozone;
+  float pressure;
+  float uv;
+  float lux;
+  float temperature;
+  float humidity;
+};
+
+// Function Prototypes
 bool initRTC();
+bool initGPS();
 void initGasSensor();
 void initBarometer();
 void initOzoneSensor();
 void initUVSensor();
-bool initGPS();
-void updateGPS();
-void printSensorData();
-void printDateTime(const DateTime &dt);
-void scanI2CBus(); // New function to scan I2C bus
+void sendSBDMessage();
+DataPacket collectData();
 
-// Global flag for sensor status
+// Constants
+#define MAIN_LOOP_DELAY 3000
+#define PACKET_SIZE sizeof(DataPacket)
+#define MAX_PACKETS ((340-3) / PACKET_SIZE ) // 3 is for the packets count and xor checksum 
+#define COLLECT_NUMBER 20  // Ozone data collection range (1-100)
+#define MAIN_BAUD 9600
+
+// Global variables
 bool rtcInitialized = false;
 bool gpsInitialized = false;
+DataPacket packetBuffer[MAX_PACKETS];
+uint8_t packetCount = 0;
 
 void setup() {
   // Initialize serial and I2C
-  Serial.begin(9600); // Set to 9600 baud as requested
+  Serial.begin(MAIN_BAUD); // Set Serial for Printing to 9600 baud as requested
   Wire.begin();
-  if (am2302.begin()) {
-      // this delay is needed to receive valid data,
-      // when the loop directly read again
-   }
-  
+
   // Wait for serial to be ready (especially on Leonardo/Micro boards)
   while (!Serial && millis() < 3000);
   
-  Serial.println(F("Environmental Sensor Array Initializing..."));
-  
-  // Scan I2C bus to find connected devices
-  scanI2CBus();
-  
   // Initialize all sensors
   rtcInitialized = initRTC();
+  gpsInitialized = initGPS();
   initGasSensor();
   initBarometer();
   initOzoneSensor();
   initUVSensor();
-  gpsInitialized = initGPS();
-  
-  // Print I2C configuration summary
-  Serial.println(F("\nI2C Configuration Summary:"));
-  Serial.println(F("-------------------------"));
-  Serial.println(F("RTC Module: 0x68 (default)"));
-  Serial.print(F("Multichannel Gas: 0x")); Serial.println(GAS_ADDRESS, HEX);
-  Serial.print(F("Ozone Sensor: 0x")); Serial.println(OZONE_ADDRESS, HEX);
-  Serial.print(F("LTR390 UV Sensor: 0x")); Serial.println(I2C_ADDRESS_LTR390, HEX);
-  Serial.print(F("GPS: 0x42\n")); 
-  if (gpsInitialized) {
-    // Serial.println(myGNSS.getI2CAddress(), HEX);
-  } else {
-    Serial.println(F("Not connected"));
-  }
-  Serial.println(F("-------------------------\n"));
+  initIridium();
 }
 
 void loop() {
-  // No explicit update needed for GPS - u-blox library updates automatically
-  
-  // Print all sensor data
-  printSensorData();
+      // Collect data every second
+    if (millis() % 1000 < 50) {  // Run once per second
+        packetBuffer[packetCount] = collectData();
+        packetCount++;
 
-  delay(LOOP_DELAY);
-}
+        Serial.print("Collected packet ");
+        Serial.println(packetCount);
 
-// Scan I2C bus for connected devices
-void scanI2CBus() {
-  Serial.println(F("Scanning I2C bus for devices:"));
-  byte count = 0;
-  
-  for (byte address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    byte error = Wire.endTransmission();
-    
-    if (error == 0) {
-      Serial.print(F("Device found at address 0x"));
-      if (address < 16) Serial.print(F("0"));
-      Serial.println(address, HEX);
-      count++;
+        if (packetCount >= MAX_PACKETS) {
+            sendSBDMessage();
+        }
     }
-  }
-  
-  Serial.print(F("Found ")); 
-  Serial.print(count);
-  Serial.println(F(" device(s) on I2C bus\n"));
+
+    // Send SBD message every 60 seconds if we have data
+    if (millis() % 60000 < 50 && packetCount > 0) {
+        sendSBDMessage();
+    }
+  delay(MAIN_LOOP_DELAY);
 }
 
+bool initIridium() {
+  IridiumSerial.begin(19200);  // Iridium SBD baud rate
+  IridiumModem.begin();        // Initialize the Iridium IridiumModem
+  return true;
+}
 // Initialize Real-Time Clock - returns true if successful
 bool initRTC() {
   Serial.print(F("Initializing RTC... "));
@@ -158,22 +178,15 @@ void initBarometer() {
   Serial.println(F("OK"));
 }
 
-// Initialize Ozone Sensor
+// Initialise Ozone sensor
 void initOzoneSensor() {
   Serial.print(F("Initializing Ozone Sensor... "));
   delay(100); // Brief delay for sensor stabilization
   
   if (!ozone.begin(OZONE_ADDRESS)) {
-    Serial.println(F("FAILED - Check wiring and address"));
-    Serial.println(F("Retrying..."));
-    delay(1000);
-    if (!ozone.begin(OZONE_ADDRESS)) {
-      Serial.println(F("FAILED AGAIN - Continuing anyway"));
-    } else {
-      Serial.println(F("Connected on retry"));
-      ozone.setModes(MEASURE_MODE_PASSIVE);
-    }
-  } else {
+    return false;
+  } 
+  else {
     ozone.setModes(MEASURE_MODE_PASSIVE);
     Serial.println(F("OK"));
   }
@@ -222,140 +235,154 @@ bool initGPS() {
   return false;
 }
 
-// Print date and time from RTC in a reliable way
-void printDateTime(const DateTime &dt) {
-  // Print time
-  Serial.print(F("TIME: "));
-  
-  // Print hours with leading zero if needed
-  if (dt.hour() < 10) Serial.print('0');
-  Serial.print(dt.hour());
-  Serial.print(':');
-  
-  // Print minutes with leading zero if needed
-  if (dt.minute() < 10) Serial.print('0');
-  Serial.print(dt.minute());
-  Serial.print(':');
-  
-  // Print seconds with leading zero if needed
-  if (dt.second() < 10) Serial.print('0');
-  Serial.print(dt.second());
-  
-  // Print date
-  Serial.print(F(" | DATE: "));
-  
-  // Print month with leading zero if needed
-  if (dt.month() < 10) Serial.print('0');
-  Serial.print(dt.month());
-  Serial.print('/');
-  
-  // Print day with leading zero if needed
-  if (dt.day() < 10) Serial.print('0');
-  Serial.print(dt.day());
-  Serial.print('/');
-  
-  // Print year
-  Serial.println(dt.year());
+// Initialize Temperature 
+bool initTemperatureSensor() {
+    am2302.begin();  // Initialize the AM2302 sensor
+
+    delay(1000);  // Small delay to allow stabilization
+
+    if (am2302.read() != 0) {  // Check if the sensor responds correctly
+        return true;
+    } else {
+        return false;
+    }
 }
 
-// Print all sensor data
-void printSensorData() {
-  Serial.println(F("\n=========== SENSOR READINGS ==========="));
-  
-  // SECTION 1: Time and Date (with error handling)
-  if (rtcInitialized) {
-    DateTime now = rtc.now();
-    printDateTime(now);
-  } else {
-    Serial.println(F("RTC not initialized - No time data"));
-  }
-  
-  // SECTION 2: GPS Data - updated for u-blox GPS
-  Serial.println(F("\n-- GPS Data --"));
+// Returns Time info by reference to packet.
+bool getDateTime(DataPacket &packet) {
+  if (!rtcInitialized) {
+    return false;
+  } 
+  DateTime now = rtc.now();
+  packet.hour = now.hour();
+  packet.minute = now.minute();
+  packet.second = now.second();
+  // packet.month = now.month();
+  // packet.day = now.day();
+  // packeet.year = now.year();
+  return true;
+}
+
+// Get GPS function to fill the DataPacket struct by reference
+bool getGPS(DataPacket &packet) {
   if (gpsInitialized) {
     if (myGNSS.isConnected()) {
       // Get positioning data using u-blox methods
-      long latitude = myGNSS.getLatitude();
-      long longitude = myGNSS.getLongitude();
-      long altitude = myGNSS.getAltitude();
-      byte satellites = myGNSS.getSIV();
-      byte fixType = myGNSS.getFixType();
-      
-      // Convert and print location
-      Serial.print(F("Location: "));
-      Serial.print(latitude / 10000000.0, 6); // Convert to decimal degrees
-      Serial.print(F(", "));
-      Serial.println(longitude / 10000000.0, 6);
-      
-      // Print altitude
-      Serial.print(F("Altitude: "));
-      Serial.print(altitude / 1000.0); // Convert to meters
-      Serial.println(F(" m"));
-      
-      // Print satellites
-      Serial.print(F("Satellites: "));
-      Serial.println(satellites);
-      
-      // Print fix type
-      Serial.print(F("Fix type: "));
-      if (fixType == 0) Serial.println(F("No fix"));
-      else if (fixType == 1) Serial.println(F("Dead reckoning"));
-      else if (fixType == 2) Serial.println(F("2D fix"));
-      else if (fixType == 3) Serial.println(F("3D fix"));
-      else if (fixType == 4) Serial.println(F("GNSS + Dead reckoning"));
-      else if (fixType == 5) Serial.println(F("Time only"));
-    } else {
-      Serial.println(F("GPS not connected"));
-    }
-  } else {
-    Serial.println(F("GPS not initialized"));
-  }
-  
-  // SECTION 3: Gas Sensor Data
-  Serial.println(F("\n-- Gas Sensor --"));
-  Serial.print(F("NO2: ")); Serial.print(gas.measure_NO2()); Serial.println(F(" ppm"));
-  Serial.print(F("C2H5OH: ")); Serial.print(gas.measure_C2H5OH()); Serial.println(F(" ppm"));
-  Serial.print(F("VOC: ")); Serial.print(gas.measure_VOC()); Serial.println(F(" ppm"));
-  Serial.print(F("CO: ")); Serial.print(gas.measure_CO()); Serial.println(F(" ppm"));
-  
-  // SECTION 4: Barometer Data
-  Serial.println(F("\n-- Barometer --"));
-  float pressure = hp20x.ReadPressure() / 100.0;
-  float altitude = hp20x.ReadAltitude() / 100.0;
-  Serial.print(F("Pressure: ")); Serial.print(pressure); Serial.println(F(" hPa"));
-  Serial.print(F("Altitude: ")); Serial.print(altitude); Serial.println(F(" meters"));
-  
-  // SECTION 5: Ozone Data
-  Serial.println(F("\n-- Ozone Sensor --"));
-  int16_t ozoneConcentration = ozone.readOzoneData(COLLECT_NUMBER);
-  Serial.print(F("Ozone: ")); Serial.print(ozoneConcentration); Serial.println(F(" PPB"));
-  
-  // SECTION 6: UV/Light Data
-  Serial.println(F("\n-- UV/Light Sensor --"));
-  if (ltr390.newDataAvailable()) {
-    if (ltr390.getMode() == LTR390_MODE_ALS) {
-      Serial.print(F("Ambient Light: ")); 
-      Serial.print(ltr390.getLux());
-      Serial.println(F(" Lux"));
-      
-      // Swap to UV mode for next reading
-      ltr390.setGain(LTR390_GAIN_18);
-      ltr390.setResolution(LTR390_RESOLUTION_20BIT);
-      ltr390.setMode(LTR390_MODE_UVS);
-    } else {
-      Serial.print(F("UV Index: ")); 
-      Serial.println(ltr390.getUVI());
-      
-      // Swap to ALS mode for next reading
-      ltr390.setGain(LTR390_GAIN_3);
-      ltr390.setResolution(LTR390_RESOLUTION_18BIT);
-      ltr390.setMode(LTR390_MODE_ALS);
-    }
-  } else {
-    Serial.println(F("No new UV/Light data available"));
-  }
+      packet.latitude = myGNSS.getLatitude();  // Save latitude to packet
+      packet.longitude = myGNSS.getLongitude();  // Save longitude to packet
+      packet.altitude = myGNSS.getAltitude();  // Save altitude to packet
+      packet.satellites = myGNSS.getSIV();  // Save satellites count to packet
+      packet.fixtype = myGNSS.getFixType();  // Save GPS fix type to packet
+      // Serial.print(latitude / 10000000.0, 6); // Convert to decimal degrees (usually they are scaled by 1e7)
+      // Serial.println(longitude / 10000000.0, 6); // convert to meters from millimeters
+      //FIXME: Check is meters or km or what
 
-  // Section 7: Temperature and Humidity
-  
-  Serial.println(F("======================================="));
+      // if (fixType == 0) Serial.println(F("No fix"));
+      // else if (fixType == 1) Serial.println(F("Dead reckoning"));
+      // else if (fixType == 2) Serial.println(F("2D fix"));
+      // else if (fixType == 3) Serial.println(F("3D fix"));
+      // else if (fixType == 4) Serial.println(F("GNSS + Dead reckoning"));
+      // else if (fixType == 5) Serial.println(F("Time only"));
+    } 
+    else {
+      return false;
+    }
+  } 
+  else {
+    return false;
+  }
+  return true;
+}
+
+// Get Gas Sensor Data
+bool getGas(DataPacket &packet) {
+    packet.NO2 = gas.measure_NO2();       // NO2 concentration in ppm
+    packet.C2H5OH = gas.measure_C2H5OH(); // Ethanol concentration in ppm
+    packet.VOC = gas.measure_VOC();       // VOC concentration in ppm
+    packet.CO = gas.measure_CO();         // CO concentration in ppm
+    return true;
+}
+
+bool getBaro(DataPacket &packet) {
+  float pressure = hp20x.ReadPressure() / 100.0;  // Convert to hPa
+  float altitude = hp20x.ReadAltitude() / 100.0;  // Convert to meters
+  if (pressure > 0) {  // Assuming a valid reading is nonzero
+    packet.pressure = pressure;
+    packet.altitude = altitude;
+  } else {
+    return false;
+  }
+}
+
+// Get UV Sensor Data. (Measures Ambient Light and UVI)
+bool getUV(DataPacket &packet) {
+    if (!ltr390.newDataAvailable()) {
+        return false;
+    }
+    // Read Ambient Light (Lux)
+    ltr390.setGain(LTR390_GAIN_3);
+    ltr390.setResolution(LTR390_RESOLUTION_18BIT);
+    ltr390.setMode(LTR390_MODE_ALS);
+    delay(100);  // Small delay to allow sensor to switch modes
+
+    packet.lux = ltr390.getLux();  // Save Lux to packet
+
+    // Read UV Index
+    ltr390.setGain(LTR390_GAIN_18);
+    ltr390.setResolution(LTR390_RESOLUTION_20BIT);
+    ltr390.setMode(LTR390_MODE_UVS);
+    delay(100);  // Small delay to allow sensor to switch modes
+
+    packet.uv = ltr390.getUVI();  // Save UVI to packet
+    return true;
+}
+
+// Get Ozone Sensor Data
+bool getOzone(DataPacket &packet) {
+  int16_t ozoneConcentration = ozone.readOzoneData(COLLECT_NUMBER);
+  if (ozoneConcentration >= 0) {  // Valid ozone data
+    packet.ozone = ozoneConcentration;
+    return true;
+  }
+}
+
+// Get Temperature and Humidity Data
+bool getTempHumidity(DataPacket &packet) {
+  auto status = am2302.read();
+  if (status == 0) {  // Assuming 0 means a successful read
+    packet.temperature = am2302.get_Temperature();
+    packet.humidity= am2302.get_Humidity();
+  } else {
+    return false;
+  }
+}
+
+// Function to send SBD message using Iridium SBD
+void sendSBDMessage() {
+    if (packetCount == 0) return;  // No data to send
+
+    // Prepare the message (1 byte for packet count, followed by packet data)
+    uint8_t message[1 + (packetCount * sizeof(DataPacket))];  // Total message size
+    message[0] = packetCount;  // First byte is the packet count
+    memcpy(&message[1], packetBuffer, packetCount * sizeof(DataPacket));  // Copy packets into message
+
+    // Send the message using the IridiumSBD library's sendSBDBinary function
+    int messageSize = 1 + (packetCount * sizeof(DataPacket));
+    IridiumModem.sendSBDBinary(message, messageSize);
+
+    // Reset packet buffer
+    packetCount = 0;
+}
+
+// FIXME: Test function to collect data and return a packet
+DataPacket collectData() {
+ DataPacket packet;
+    getDateTime(packet);
+    getGPS(packet);
+    getUV(packet);
+    getBaro(packet);
+    getGas(packet);
+    getOzone(packet);
+    getTempHumidity(packet);
+    return packet;
 }
