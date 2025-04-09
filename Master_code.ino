@@ -11,6 +11,10 @@
 #include <LTR390.h>
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h> // Updated GPS library
 #include <AM2302-Sensor.h>
+#include <ArduCAM.h>
+#include <SPI.h>
+#include <SD.h>
+#include "memorysaver.h"
 
 // Define constants
 #define I2C_ADDRESS_LTR390 0x53
