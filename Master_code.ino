@@ -160,9 +160,8 @@ void loop() {
     or global initialisation of totals.
     TAKE PICTURE FUNCTION every PICTURE_INTERVAL
     Collect sensor data every SENSOR_INTERVAL into packet form collectData()
-    OFF/ON for LED's
+    OFF/ON for LED's    
     write to sd card with saveSD function (pass the packet).
-    OFF/ON for LED's
     Update totals for averaging. (maybe write a function with static variables?)
     readingcount ++
     returns last packet
@@ -188,12 +187,15 @@ void loop() {
 
     buffer[messagePacketCount] = p;
     messagePacketCount = (messagePacketCount + 1) % 5; // keep it 4 or less, which is necessary for indexing
+
+    // ON OFF LED
   }
 
   // =========== TRANSMISSION PART: Initiates (Message Array of Packets) Tranmission
   if ((messagePacketCount == 4) && hasSecondsPassed(last_m, MESSAGE_INTERVAL)) {
     messagePacketCount = 0;
     sendSBDMessage();
+    // ON OFF LED
   }
     
 }
