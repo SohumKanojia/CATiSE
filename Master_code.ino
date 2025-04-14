@@ -172,7 +172,6 @@ struct DataTotals {
   TimeRef last_average; // time of last averaged packet
   TimeRef last_message; // time of last sent message
 
-
 void setup() {
   // Initialize serial and I2C
   Serial.begin(MAIN_BAUD); // Set Serial for Printing to 9600 baud as requested
