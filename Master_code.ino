@@ -40,6 +40,8 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
   #include <SD.h>
   #include <SPI.h>
   #include <ArduCAM.h>
+  #include <Adafruit_GFX.h>
+  #include <Adafruit_SSD1306.h>
 
 // I2C Intrerface Addresses
   #define I2C_ADDRESS_LTR390 0x53
@@ -61,6 +63,8 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
   IridiumSBD IridiumModem(IridiumSerial);
   #define COLLECT_NUMBER 20       // Ozone data collection range (1-100)
   ArduCAM myCAM(OV2640, CS_PIN);
+  Adafruit_SSD1306 display(128, 64, &Wire, -1);
+  String oledOutput;
   
 // DataPacket Struct Info: Not used as class due to tranmission.
   struct __attribute__((packed)) DataPacket {
@@ -144,6 +148,7 @@ struct DataTotals {
   bool initBarometer();
   bool initUVSensor();
   bool initIridium();
+  void initOled();
   bool hasSecondsPassed(TimeRef&, uint32_t);
   DataPacket collectData();
   int sendSBDMessage();
@@ -179,6 +184,7 @@ void setup() {
   SD.begin(CS_PIN);
   
   // Initialize all parts
+  oledOutput = ""; // initializing the String that will print to OLED
   rtcInitialized = initRTC();
   gpsInitialized = initGPS();
   initGasSensor();
@@ -188,6 +194,7 @@ void setup() {
   initIridium();
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);   // Start with LEDs ON
+  initOled();
 
   // Setup Initial times.
   last_message.rtcTime = rtc.now();
@@ -241,10 +248,33 @@ void loop() {
   setLights(true);
 }
 
+// Initializes OLED and prints to the screen which sensors if any have errors
+void initOled(){
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
+    for(;;);
+  }
+  delay(2000);
+
+  display.clearDisplay();
+  display.setTextSize(2.4);
+  display.setTextColor(WHITE);
+  display.setCursor(5, 10);
+  display.setTextWrap(true);
+
+  if (oledOutput == ""){
+    oledOutput = "No errors";
+  }
+
+  // Display static text
+  display.println(oledOutput);
+  display.display();
+}
+
 // Initialize Real-Time Clock - returns true if successful
 bool initRTC() {
   // Try to initialize RTC
   if (!rtc.begin()) {
+    oledOutput += "RTC, ";
     return false;
   }
   
@@ -278,17 +308,25 @@ bool initGPS() {
   }
   
   // All attempts failed
+  oledOutput += "GPS, ";
   return false;
 }
 
-// Initialize Gas Sensor FIXME: Add false conditional (gas.begin has void return)
+// Initialize Gas Sensor
 bool initGasSensor() {
-  gas.begin(Wire, GAS_ADDRESS);
+  if (!gas.begin(Wire, GAS_ADDRESS)) {
+    oledOutput += "gas, ";
+    return false;
+  }
+  else {
+    gas.begin(Wire, GAS_ADDRESS)
+  }
 }
 
 // Initialise Ozone sensor
 bool initOzoneSensor() {
   if (!ozone.begin(OZONE_ADDRESS)) {
+    oledOutput += "ozone, ";
     return false;
   } 
   else {
@@ -296,14 +334,21 @@ bool initOzoneSensor() {
   }
 }
 
-// Initialize Barometer FIXME: add false conditional
+// Initialize Barometer
 bool initBarometer() { 
-  hp20x.begin();
+  if (!hp20x.begin()) {
+    oledOutput += "baro, ";
+    return false;
+  }
+  else hp20x.begin();
 }
 
 // Initialize UV Sensor
 bool initUVSensor() {
-  if (!ltr390.init()) return false;
+  if (!ltr390.init()) {
+    oledOutput += "UV, "; 
+    return false;
+  }
   else {
     // Configure sensor
     ltr390.setMode(LTR390_MODE_ALS);
@@ -317,15 +362,16 @@ bool initUVSensor() {
 
 // Initialize Temperature 
 bool initTemperatureSensor() {
-    am2302.begin();  // Initialize the AM2302 sensor
+  am2302.begin();  // Initialize the AM2302 sensor
 
-    delay(1000);  // Small delay to allow stabilization
+  delay(1000);  // Small delay to allow stabilization
 
-    if (am2302.read() != 0) {  // Check if the sensor responds correctly
-        return true;
-    } else {
-        return false;
-    }
+  if (am2302.read() != 0) {  // Check if the sensor responds correctly
+    return true;
+  } else {
+    oledOutput += "temp, "; 
+    return false;
+  }
 }
 
 bool initIridium() {
