@@ -22,9 +22,10 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
   #define LINES_BUFFER_SIZE 10    // Number of Sensor readings before a write to buffer is necessary
   #define MESSAGE_SIZE 220        // size of each packet in the message * the lineCount of them
   #define MAX_LINES 1000          // Lines used in every sd card file
-  #define LED_PIN 5
-  #define TEMPHUMID_PIN 7 // See SENSOR_PIN as well
-  #define CS_PIN 6                // Camera Pin
+  #define LED_PIN 4
+  #define CAM_CS 5
+  #define SD_CS 6
+  #define TEMPHUMID_PIN 7U // See SENSOR_PIN as well
   
 
 // Libraries
@@ -56,11 +57,11 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
   HP20x_dev hp20x;
   DFRobot_OzoneSensor ozone;
   LTR390 ltr390(I2C_ADDRESS_LTR390);
-  constexpr unsigned int SENSOR_PIN {7U}; // Pin 7 for Temperaute/Humidity
+  constexpr unsigned int SENSOR_PIN {TEMPHUMID_PIN}; // Pin 7 for Temperaute/Humidity
   AM2302::AM2302_Sensor am2302{SENSOR_PIN};
   IridiumSBD IridiumModem(IridiumSerial);
   #define COLLECT_NUMBER 20       // Ozone data collection range (1-100)
-  ArduCAM myCAM(OV2640, CS_PIN);
+  ArduCAM myCAM(OV2640, CAM_CS);
   
 // DataPacket Struct Info: Not used as class due to tranmission.
   struct __attribute__((packed)) DataPacket {
@@ -148,8 +149,8 @@ struct DataTotals {
   DataPacket collectData();
   int sendSBDMessage();
   void setLights(bool on, int startDelay = 0, int endDelay = 0);
-  bool saveSensorData(DataPacket); // Write a packet (row) of time, gps, and sensors to the sd card files.
-  bool saveSensorData(const DataPacket* packets, size_t lineCount); // Overload function for multiple packets
+  bool writeDataPacket(DataPacket); // Write a packet (row) of time, gps, and sensors to the sd card files.
+  bool writeDataPacket(const DataPacket* packets, size_t lineCount); // Overload function for multiple packets
   void takePicture(); // take and save picture
 
 // Loop Variables
@@ -176,8 +177,8 @@ void setup() {
   // Initialize serial and I2C
   Serial.begin(MAIN_BAUD); // Set Serial for Printing to 9600 baud as requested
   Wire.begin();
-  SD.begin(CS_PIN);
-  
+  if(SD.begin(SD_PIN)) Serial.println(F"SD Initialised Correctly);
+
   // Initialize all parts
   rtcInitialized = initRTC();
   gpsInitialized = initGPS();
@@ -206,7 +207,7 @@ void loop() {
       linesBuffer[lineIndex++] = p;
       totals.add(p);
       if (lineIndex == LINES_BUFFER_SIZE - 1) {
-        saveSensorData(linesBuffer, LINES_BUFFER_SIZE);
+        writeDataPacket(linesBuffer, LINES_BUFFER_SIZE);
         lineIndex = 0;
       }
   }
@@ -476,7 +477,7 @@ bool ISBDCallback() {
       linesBuffer[lineIndex++] = p;
       totals.add(p);
       if (lineIndex == LINES_BUFFER_SIZE - 1) {
-        saveSensorData(linesBuffer, LINES_BUFFER_SIZE);
+        writeDataPacket(linesBuffer, LINES_BUFFER_SIZE);
         lineIndex = 0;
       }
   }
@@ -512,7 +513,7 @@ void setLights(bool on, int startDelay = 0, int endDelay = 0) {
 }
 
 // Save one packet per call to SD
-bool saveSensorData(DataPacket packet) {
+bool writeDataPacket(DataPacket packet) {
   static int fileIndex = 0;
   static char currentFileName[20] = "";
 
@@ -560,9 +561,9 @@ bool saveSensorData(DataPacket packet) {
 }
 
 // Save Multiple Packets (collected during transmission)
-bool saveSensorData(const DataPacket* packets, size_t packetCount) {
+bool writeDataPacket(const DataPacket* packets, size_t packetCount) {
   for (size_t i = 0; i < packetCount; i++) {
-    if (!saveSensorData(packets[i])) {
+    if (!writeDataPacket(packets[i])) {
       return false;
     }
   }
@@ -570,6 +571,8 @@ bool saveSensorData(const DataPacket* packets, size_t packetCount) {
 }
 
 void takePicture() {
+  digitalWrite(SD_CS, HIGH); // Disable SD Card
+  myCAM.CS_LOW(); // Enable Camera
   myCAM.flush_fifo();
   myCAM.clear_fifo_flag();
 
@@ -632,7 +635,8 @@ void saveImageFromFIFO() {
     }
     imageCount++;
   }
-
-  myCAM.CS_HIGH();
+  myCAM.CS_HIGH();            // Disable camera
+  digitalWrite(SD_CS, LOW);   // Re-enable SD card
   outFile.close();
+
 }
