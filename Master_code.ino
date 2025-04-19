@@ -177,7 +177,7 @@ void setup() {
   // Initialize serial and I2C
   Serial.begin(MAIN_BAUD); // Set Serial for Printing to 9600 baud as requested
   Wire.begin();
-  if(SD.begin(SD_PIN)) Serial.println(F"SD Initialised Correctly);
+  if(SD.begin(SD_CS)) Serial.println("SD Initialised Correctly");
 
   // Initialize all parts
   rtcInitialized = initRTC();
