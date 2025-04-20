@@ -2,21 +2,13 @@
 Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
  * Main Mission Code
  * For Wiring Diagram and Extra Notes, See Wiring_and_Notes.txt
-* User Digital Inputs to Arudino:
-    Iridium Serial: Serial3
-    Temperaute Sensor Digital Pin: 7
-    Camera Digital Pin: 6
-    Led Digital Pin: 5
-
-
-*/
 
 // Mission Parameters (Time in seconds)
   #define MAIN_BAUD 9600          // Baud rate used for Serial Monitor Printing
   #define SENSOR_INTERVAL 1       // Minimum interval between sensor collection
   #define AVERAGING_INTERVAL 45   // Minimum Span to average a packet over
   #define MESSAGE_INTERVAL 180    // Minimum interval between Sending Messages to Satellite
-  #define PICTURE_INTERVAL 300    // Minimum interval between taking a picture for local storage 
+  #define PICTURE_INTERVAL 240   // Minimum interval between taking a picture for local storage 
   #define CALLBACK_INTERVALS_COEFFICIENT 2 // The constant by which all intervals all multiplied by for the callback function in the satellite transmission
   #define PACKETS_PER_MESSAGE 4   // Number of Packets in every message to be sent to the sattelite (proportional to max size of message 340, and packet size)
   #define LINES_BUFFER_SIZE 10    // Number of Sensor readings before a write to buffer is necessary
@@ -26,6 +18,7 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
   #define CAM_CS 5
   #define SD_CS 6
   #define TEMPHUMID_PIN 7U // See SENSOR_PIN as well
+  const String file_prefix = "cData"; // + i.csv BE VERY CAREFUL. There are limits on file name length. Must Test. Example (CalicoData1.csv) doesn't work 
   
 
 // Libraries
@@ -62,6 +55,9 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
   IridiumSBD IridiumModem(IridiumSerial);
   #define COLLECT_NUMBER 20       // Ozone data collection range (1-100)
   ArduCAM myCAM(OV2640, CAM_CS);
+  #if !(defined OV2640_MINI_2MP)
+  #error Please select the hardware platform and camera module in the ../libraries/ArduCAM/memorysaver.h file
+  #endif
   
 // DataPacket Struct Info: Not used as class due to tranmission.
   struct __attribute__((packed)) DataPacket {
@@ -145,18 +141,23 @@ struct DataTotals {
   bool initBarometer();
   bool initUVSensor();
   bool initIridium();
+  bool initCamera();
   bool hasSecondsPassed(TimeRef&, uint32_t);
   DataPacket collectData();
   int sendSBDMessage();
   void setLights(bool on, int startDelay = 0, int endDelay = 0);
-  bool writeDataPacket(DataPacket); // Write a packet (row) of time, gps, and sensors to the sd card files.
-  bool writeDataPacket(const DataPacket* packets, size_t lineCount); // Overload function for multiple packets
+  bool writeDataPacket(DataPacket*, size_t); // Overload function for multiple packets
+  bool writeDataPacket(DataPacket, File); // Write a packet (row) of time, gps, and sensors to the sd card files.
   void takePicture(); // take and save picture
+
+
+
+////////////////////////// DEBUGGING FUNCTIONS PROTOTYPES
+bool printDataPacket(DataPacket packet);
 
 // Loop Variables
   bool rtcInitialized = false;
   bool gpsInitialized = false;
-  bool is_header = false; // used in camera function
   bool messageReady = false;
   DataTotals totals;
   DataPacket p;
@@ -174,10 +175,13 @@ struct DataTotals {
   TimeRef last_message; // time of last sent message
 
 void setup() {
-  // Initialize serial and I2C
+  // Initialize Serial, I2C, SPI
   Serial.begin(MAIN_BAUD); // Set Serial for Printing to 9600 baud as requested
   Wire.begin();
-  if(SD.begin(SD_CS)) Serial.println("SD Initialised Correctly");
+  SPI.begin();
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, LOW); // Turn on
+  if(SD.begin(SD_CS)) Serial.println(F("\nSD Initialised Correctly"));
 
   // Initialize all parts
   rtcInitialized = initRTC();
@@ -186,7 +190,9 @@ void setup() {
   initOzoneSensor();
   initBarometer();
   initUVSensor();
-  initIridium();
+  // initIridium(); "////////////////////NOTE: CURRENTLY DISABLED
+  initCamera(); 
+  Serial.println(F("SENSORS INITIALISED"));
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);   // Start with LEDs ON
 
@@ -200,22 +206,26 @@ void setup() {
 
 void loop() {
   // Sensor data collection
-  setLights(false);
+  setLights(false,0,500);
 
   if (hasSecondsPassed(last_sensor, SENSOR_INTERVAL) && lineIndex < LINES_BUFFER_SIZE) {
+    Serial.println("Sensor Read Interval Passed");
       p = collectData();
       linesBuffer[lineIndex++] = p;
       totals.add(p);
-      if (lineIndex == LINES_BUFFER_SIZE - 1) {
+      printDataPacket(p);
+      if (lineIndex >= LINES_BUFFER_SIZE) {
+        Serial.println("Sensor Buffer Limit Reached. Beginning Writing");
         writeDataPacket(linesBuffer, LINES_BUFFER_SIZE);
+
         lineIndex = 0;
       }
   }
 
-  setLights(true);
 
   // Averaging logic
   if (hasSecondsPassed(last_average, AVERAGING_INTERVAL) && !messageReady) {
+      Serial.println("Sensor Averaging Interval Reached. Beginning Averaging.");
       DataPacket avg_p = totals.average(p); 
       
       // Only add if message is not already full
@@ -223,23 +233,26 @@ void loop() {
       if (messagePacketCount == PACKETS_PER_MESSAGE) {
         messageReady = true; // clearly mark message as ready
       }
+      printDataPacket(avg_p);
       totals.reset();
   }
 
-  setLights(false);
-
+//// CURRENTLY DISABLED TRANSMISSION AND PICTURE, ALSO IRIDIUM
+/*
   // Transmission logic (simplified and clear)
   if (messageReady && hasSecondsPassed(last_message, MESSAGE_INTERVAL)) {
     messagePacketCount = 0;
     int status = sendSBDMessage();
     if (status != ISBD_CANCELLED) messageReady = false; // If callback cancelled transmission, new message is ready
   }
-
+*/
   // Image capturing (unchanged)
   if (hasSecondsPassed(last_image, PICTURE_INTERVAL)) {
     takePicture();
+    Serial.println(F("Image Taken"));
   }
-  setLights(true);
+
+  setLights(true,0, 500);
 }
 
 // Initialize Real-Time Clock - returns true if successful
@@ -310,7 +323,6 @@ bool initUVSensor() {
     ltr390.setMode(LTR390_MODE_ALS);
     ltr390.setGain(LTR390_GAIN_3);
     ltr390.setResolution(LTR390_RESOLUTION_18BIT);
-    Serial.println(F("OK"));
   }
   return true;
 
@@ -319,12 +331,19 @@ bool initUVSensor() {
 // Initialize Temperature 
 bool initTemperatureSensor() {
     am2302.begin();  // Initialize the AM2302 sensor
-
-    delay(1000);  // Small delay to allow stabilization
-
-    if (am2302.read() != 0) {  // Check if the sensor responds correctly
-        return true;
-    } else {
+    delay(3000);
+    bool status = am2302.read();
+    int i = 0;
+    while (status == false && i < 6) {
+      am2302.begin();
+      bool status = am2302.read();
+      i=i+1;
+      delay(500);
+    }  // Assuming 0 means a successful read
+    if (status == true) {
+    return true;
+    }
+    else {
         return false;
     }
 }
@@ -417,8 +436,10 @@ bool getUV(DataPacket &packet) {
 }
 
 bool getTempHumidity(DataPacket &packet) {
-  int status = am2302.read();
-  if (status == 0) {  // Assuming 0 means a successful read
+  bool status = am2302.read();
+  delay(500);
+  // Assuming 0 means a successful read
+  while (status == true) {
     packet.temperature = am2302.get_Temperature();
     packet.humidity= am2302.get_Humidity();
     return true;
@@ -513,27 +534,8 @@ void setLights(bool on, int startDelay = 0, int endDelay = 0) {
 }
 
 // Save one packet per call to SD
-bool writeDataPacket(DataPacket packet) {
-  static int fileIndex = 0;
-  static char currentFileName[20] = "";
-
-  // If it's the first call or file is full. Initialise file
-  if (lineCount == 0 || lineCount >= MAX_LINES) {
-    snprintf(currentFileName, sizeof(currentFileName), "data%d.csv", fileIndex++);
-    File dataFile = SD.open(currentFileName, FILE_WRITE);
-    if (dataFile) {
-      dataFile.println(
-        "second,minute,hour,"
-        "latitude,longitude,altitude,satellites,fixtype,"
-        "NO2,C2H5OH,VOC,CO,ozone,pressure,uv,lux,temperature,humidity"
-      );
-      dataFile.close();
-    }
-    lineCount = 0;
-  }
-
-  // Open and Append data to file
-  File dataFile = SD.open(currentFileName, FILE_WRITE);
+// Assumes SD is ON
+bool writeDataPacket(DataPacket packet, File dataFile) {
   if (!dataFile) return false;
   dataFile.print(packet.second);        dataFile.print(",");
   dataFile.print(packet.minute);        dataFile.print(",");
@@ -554,89 +556,178 @@ bool writeDataPacket(DataPacket packet) {
   dataFile.print(packet.uv);            dataFile.print(",");
   dataFile.print(packet.lux);           dataFile.print(",");
   dataFile.print(packet.temperature);   dataFile.print(",");
-  dataFile.println(packet.humidity);  // newline
-
-  dataFile.close();
+  dataFile.println(packet.humidity);
   lineCount++;
-}
-
-// Save Multiple Packets (collected during transmission)
-bool writeDataPacket(const DataPacket* packets, size_t packetCount) {
-  for (size_t i = 0; i < packetCount; i++) {
-    if (!writeDataPacket(packets[i])) {
-      return false;
-    }
-  }
   return true;
 }
 
-void takePicture() {
-  digitalWrite(SD_CS, HIGH); // Disable SD Card
-  myCAM.CS_LOW(); // Enable Camera
-  myCAM.flush_fifo();
-  myCAM.clear_fifo_flag();
+// Save Multiple Packets (collected during transmission), Handles File Names
+bool writeDataPacket(DataPacket* packets, size_t packetCount) {
+  static int fileIndex = 0;
+  static String filename;
 
-  #if defined (OV2640_MINI_2MP_PLUS)
-  myCAM.OV2640_set_JPEG_size(OV2640_1600x1200);
-  #endif
+  // Handle Header for New Files
+  if (lineCount == 0 || lineCount >= MAX_LINES) {
+    filename = file_prefix + String(fileIndex++) + ".csv"; // DO NOT CHANGE THIS PLEASE: THERE ARE CONSTRAINTS ON FILE NAME LENGTH
+    File dataFile = SD.open(filename.c_str(), FILE_WRITE);
+    if (dataFile) {
+      dataFile.println(
+        "second,minute,hour,"
+        "latitude,longitude,altitude,satellites,fixtype,"
+        "NO2,C2H5OH,VOC,CO,ozone,pressure,uv,lux,temperature,humidity"
+      );
+      dataFile.close();
+      Serial.println("Written Head");
+    }
+    lineCount = 0;
+  }
 
-  myCAM.start_capture();
+  File dataFile = SD.open(filename, FILE_WRITE);
+  if (!dataFile) return false;
 
-  while (!myCAM.get_bit(ARDUCHIP_TRIG, CAP_DONE_MASK));
+  for (size_t i = 0; i < packetCount; ++i) {
+    if (!writeDataPacket(packets[i], dataFile)) {
+      dataFile.close();
+      return false;
+    }
+    // String a = "Written Line" + String(i);
+    // Serial.println(a);
+  }
 
-  saveImageFromFIFO();
-
-  myCAM.clear_fifo_flag();
+  dataFile.close();
+  return true;
 }
 
-void saveImageFromFIFO() {
-  static uint8_t imageCount = 0;
-  uint8_t temp = 0, temp_last = 0;
-  uint32_t length = myCAM.read_fifo_length();
+// NOTE: Debugging and Help Functions
+bool printDataPacket(DataPacket packet) {
+  Serial.print(packet.second);        Serial.print(",");
+  Serial.print(packet.minute);        Serial.print(",");
+  Serial.print(packet.hour);          Serial.print(",");
+  Serial.print(packet.latitude);      Serial.print(",");
+  Serial.print(packet.longitude);     Serial.print(",");
+  Serial.print(packet.altitude);      Serial.print(",");
+  Serial.print(packet.satellites);    Serial.print(",");
+  Serial.print(packet.fixtype);       Serial.print(",");
+  Serial.print(packet.NO2);           Serial.print(",");
+  Serial.print(packet.C2H5OH);        Serial.print(",");
+  Serial.print(packet.VOC);           Serial.print(",");
+  Serial.print(packet.CO);            Serial.print(",");
+  Serial.print(packet.ozone);         Serial.print(",");
+  Serial.print(packet.pressure);      Serial.print(",");
+  Serial.print(packet.uv);            Serial.print(",");
+  Serial.print(packet.lux);           Serial.print(",");
+  Serial.print(packet.temperature);   Serial.print(",");
+  Serial.println(packet.humidity);
+  return true;
+}
+
+// FIXME: Change to use time instead of numbers
+void takePicture(){
+  char str[8];
   byte buf[256];
-  char filename[16];
+  static int i = 0;
+  static int k = 0;
+  uint8_t temp = 0,temp_last=0;
+  uint32_t length = 0;
+  bool is_header = false;
   File outFile;
-  int i = 0;
-
-  if (length == 0 || length >= MAX_FIFO_SIZE) {
-    Serial.println(F("Invalid image size."));
+  //Flush the FIFO
+  myCAM.flush_fifo();
+  //Clear the capture done flag
+  myCAM.clear_fifo_flag();
+  //Start capture
+  myCAM.start_capture();
+  Serial.println(F("start Capture"));
+  while(!myCAM.get_bit(ARDUCHIP_TRIG , CAP_DONE_MASK));
+  Serial.println(F("Capture Done."));  
+  length = myCAM.read_fifo_length();
+  Serial.print(F("The fifo length is :"));
+  Serial.println(length, DEC);
+  //Construct a file name
+  String imgname = "img" + String(k++) + ".jpg";
+  //Open the new file
+  outFile = SD.open(imgname.c_str(), O_WRITE | O_CREAT | O_TRUNC);
+  if(!outFile){
+    Serial.println(F("File open failed"));
     return;
   }
-
-  sprintf(filename, "img%d.jpg", imageCount++);
-  outFile = SD.open(filename, FILE_WRITE);
-  if (!outFile) {
-    return;
-  }
-
   myCAM.CS_LOW();
   myCAM.set_fifo_burst();
-
-  while (length--) {
+  while ( length-- )
+  {
     temp_last = temp;
-    temp = SPI.transfer(0x00);
-
-    if ((temp == 0xD8) && (temp_last == 0xFF)) {
-      is_header = true;
-      buf[i++] = temp_last;
+    temp =  SPI.transfer(0x00);
+    //Read JPEG data from FIFO
+    if ( (temp == 0xD9) && (temp_last == 0xFF) ) //If find the end ,break while,
+    {
+      buf[i++] = temp;  //save the last  0XD9     
+      //Write the remain bytes in the buffer
+      myCAM.CS_HIGH();
+      outFile.write(buf, i);    
+      //Close the file
+      outFile.close();
+      Serial.println(F("Image save OK."));
+      is_header = false;
+      i = 0;
+    }  
+    if (is_header == true)
+    { 
+      //Write image data to buffer if not full
+      if (i < 256)
       buf[i++] = temp;
-    } else if ((temp == 0xD9) && (temp_last == 0xFF)) {
-      buf[i++] = temp;
-      outFile.write(buf, i);
-      break;
-    } else if (is_header) {
-      if (i < 256) {
-        buf[i++] = temp;
-      } else {
+      else
+      {
+        //Write 256 bytes image data to file
+        myCAM.CS_HIGH();
         outFile.write(buf, 256);
         i = 0;
         buf[i++] = temp;
-      }
+        myCAM.CS_LOW();
+        myCAM.set_fifo_burst();
+      }        
     }
-    imageCount++;
-  }
-  myCAM.CS_HIGH();            // Disable camera
-  digitalWrite(SD_CS, LOW);   // Re-enable SD card
-  outFile.close();
-
+    else if ((temp == 0xD8) & (temp_last == 0xFF))
+    {
+      is_header = true;
+      buf[i++] = temp_last;
+      buf[i++] = temp;   
+    } 
+  } 
 }
+
+bool initCamera() {
+  uint8_t vid, pid;
+  uint8_t temp;
+  //set the CS as an output:
+  pinMode(CAM_CS,OUTPUT);
+  digitalWrite(CAM_CS, HIGH);
+  //Reset the CPLD
+  myCAM.write_reg(0x07, 0x80);
+  delay(100);
+  myCAM.write_reg(0x07, 0x00);
+  delay(100);
+
+  //Check if the ArduCAM SPI bus is OK
+  myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
+  temp = myCAM.read_reg(ARDUCHIP_TEST1);
+  
+  if (temp != 0x55){
+    Serial.println(F("SPI interface Error!"));
+    return false;
+  }
+
+    //Check if the camera module type is OV2640
+    myCAM.wrSensorReg8_8(0xff, 0x01);
+    myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
+    myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
+    if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))){
+      Serial.println(F("Can't find OV2640 module!"));
+      return false;
+    }
+
+  myCAM.set_format(JPEG);
+  myCAM.InitCAM();
+  myCAM.OV2640_set_JPEG_size(OV2640_320x240);
+}
+
+
