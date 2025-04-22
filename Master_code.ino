@@ -5,9 +5,10 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
 * User Digital Inputs to Arudino:
     Iridium Serial: Serial3
     Temperaute Sensor Digital Pin: 7
-    Camera Digital Pin: 5
-    SD Card Digital Pin: 6
-    Led Digital Pin: 4
+    Camera Digital Pin: 6
+    Led Digital Pin: 5
+
+
 */
 
 // Mission Parameters (Time in seconds)
@@ -85,9 +86,9 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
     uint8_t hour;
 
     // GPS (14 Bytes)
-    uint32_t latitude;
-    uint32_t longitude;
-    uint32_t altitude;
+    int32_t latitude;
+    int32_t longitude;
+    int32_t altitude;
     uint8_t satellites;
     uint8_t fixtype;
 

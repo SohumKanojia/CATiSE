@@ -12,7 +12,7 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
 */
 
 // Mission Parameters (Time in seconds)
-  #define MAIN_BAUD 9600          // Baud rate used for Serial Monitor Printing
+  #define MAIN_BAUD 115200          // Baud rate used for Serial Monitor Printing
   #define SENSOR_INTERVAL 1       // Minimum interval between sensor collection
   #define AVERAGING_INTERVAL 45   // Minimum Span to average a packet over
   #define MESSAGE_INTERVAL 180    // Minimum interval between Sending Messages to Satellite FIXME: Correct back to 180 seconds
@@ -86,9 +86,9 @@ Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
     uint8_t hour;
 
     // GPS (14 Bytes)
-    uint32_t latitude;
-    uint32_t longitude;
-    uint32_t altitude;
+    int32_t latitude;
+    int32_t longitude;
+    int32_t altitude;
     uint8_t satellites;
     uint8_t fixtype;
 
@@ -148,7 +148,7 @@ struct DataTotals {
   bool initOzoneSensor();
   bool initBarometer();
   bool initUVSensor();
-  // bool initIridium();
+  bool initIridium();
   bool initCamera();
   bool hasSecondsPassed(TimeRef&, uint32_t);
   DataPacket collectData();
@@ -199,7 +199,7 @@ void setup() {
   initOzoneSensor();
   initBarometer();
   initUVSensor();
-  // if (initIridium()) Serial.println("Iridium Initialised"); ////////////////////NOTE: CURRENTLY DISABLED FIXME
+  if (initIridium()) Serial.println("Iridium Initialised"); ////////////////////NOTE: CURRENTLY DISABLED FIXME
   initCamera(); 
   Serial.println(F("SENSORS INITIALISED"));
   pinMode(LED_PIN, OUTPUT);
