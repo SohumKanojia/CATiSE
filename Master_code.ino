@@ -2,17 +2,24 @@
 Project Calico - CubeCats CATiSE Program Fall 2024-Spring 2025
  * Main Mission Code
  * For Wiring Diagram and Extra Notes, See Wiring_and_Notes.txt
+* User Digital Inputs to Arudino:
+    Iridium Serial: Serial3
+    Temperaute Sensor Digital Pin: 7
+    Camera Digital Pin: 5
+    SD Card Digital Pin: 6
+    Led Digital Pin: 4
+*/
 
 // Mission Parameters (Time in seconds)
   #define MAIN_BAUD 9600          // Baud rate used for Serial Monitor Printing
   #define SENSOR_INTERVAL 1       // Minimum interval between sensor collection
   #define AVERAGING_INTERVAL 45   // Minimum Span to average a packet over
-  #define MESSAGE_INTERVAL 180    // Minimum interval between Sending Messages to Satellite
-  #define PICTURE_INTERVAL 240   // Minimum interval between taking a picture for local storage 
+  #define MESSAGE_INTERVAL 180    // Minimum interval between Sending Messages to Satellite FIXME: Correct back to 180 seconds
+  #define PICTURE_INTERVAL 180   // Minimum interval between taking a picture for local storage 
   #define CALLBACK_INTERVALS_COEFFICIENT 2 // The constant by which all intervals all multiplied by for the callback function in the satellite transmission
   #define PACKETS_PER_MESSAGE 4   // Number of Packets in every message to be sent to the sattelite (proportional to max size of message 340, and packet size)
   #define LINES_BUFFER_SIZE 10    // Number of Sensor readings before a write to buffer is necessary
-  #define MESSAGE_SIZE 220        // size of each packet in the message * the lineCount of them
+  #define MESSAGE_SIZE 220        // size of each packet in the message * the lineCount of them FIXME make 220
   #define MAX_LINES 1000          // Lines used in every sd card file
   #define LED_PIN 4
   #define CAM_CS 5
@@ -150,14 +157,10 @@ struct DataTotals {
   bool writeDataPacket(DataPacket, File); // Write a packet (row) of time, gps, and sensors to the sd card files.
   void takePicture(); // take and save picture
 
-
-
-////////////////////////// DEBUGGING FUNCTIONS PROTOTYPES
-bool printDataPacket(DataPacket packet);
-
 // Loop Variables
   bool rtcInitialized = false;
   bool gpsInitialized = false;
+  bool callback_status = false;
   bool messageReady = false;
   DataTotals totals;
   DataPacket p;
@@ -165,8 +168,8 @@ bool printDataPacket(DataPacket packet);
   DataPacket linesBuffer[LINES_BUFFER_SIZE]; // Buffer containing sensor lines to be written to the sd card (useful for reducing writes)
   DataPacket messageBuffer[PACKETS_PER_MESSAGE]; // message with Message Size
   uint8_t message[MESSAGE_SIZE];
-  uint32_t lineCount = 0;
   uint8_t lineIndex = 0;
+  uint32_t lineCount = 0;
   uint8_t messagePacketCount = 0; // stores the current index to buffer at
   // Timers are updated internally in hasSecondsPassed
   TimeRef last_sensor;  // time of last sensors read
@@ -181,7 +184,7 @@ void setup() {
   SPI.begin();
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, LOW); // Turn on
-  if(SD.begin(SD_CS)) Serial.println(F("\nSD Initialised Correctly"));
+  SD.begin(SD_CS);
 
   // Initialize all parts
   rtcInitialized = initRTC();
@@ -190,11 +193,9 @@ void setup() {
   initOzoneSensor();
   initBarometer();
   initUVSensor();
-  // initIridium(); "////////////////////NOTE: CURRENTLY DISABLED
+  initIridium();
   initCamera(); 
-  Serial.println(F("SENSORS INITIALISED"));
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);   // Start with LEDs ON
 
   // Setup Initial times.
   last_message.rtcTime = rtc.now();
@@ -202,57 +203,50 @@ void setup() {
   last_average = last_message;
   last_sensor = last_message;
   last_image = last_message;
+  setLights(false);
 }
 
 void loop() {
-  // Sensor data collection
-  setLights(false,0,500);
 
+  setLights(false);
+  // Sensor data collection
   if (hasSecondsPassed(last_sensor, SENSOR_INTERVAL) && lineIndex < LINES_BUFFER_SIZE) {
-    Serial.println("Sensor Read Interval Passed");
       p = collectData();
       linesBuffer[lineIndex++] = p;
       totals.add(p);
-      printDataPacket(p);
       if (lineIndex >= LINES_BUFFER_SIZE) {
-        Serial.println("Sensor Buffer Limit Reached. Beginning Writing");
         writeDataPacket(linesBuffer, LINES_BUFFER_SIZE);
-
         lineIndex = 0;
       }
   }
 
-
   // Averaging logic
   if (hasSecondsPassed(last_average, AVERAGING_INTERVAL) && !messageReady) {
-      Serial.println("Sensor Averaging Interval Reached. Beginning Averaging.");
-      DataPacket avg_p = totals.average(p); 
+      DataPacket avg_p = totals.average(p);
       
       // Only add if message is not already full
       messageBuffer[messagePacketCount++] = avg_p;
       if (messagePacketCount == PACKETS_PER_MESSAGE) {
         messageReady = true; // clearly mark message as ready
       }
-      printDataPacket(avg_p);
       totals.reset();
   }
 
-//// CURRENTLY DISABLED TRANSMISSION AND PICTURE, ALSO IRIDIUM
-/*
-  // Transmission logic (simplified and clear)
-  if (messageReady && hasSecondsPassed(last_message, MESSAGE_INTERVAL)) {
+  // Transmission logic 
+  if (messageReady && hasSecondsPassed(last_message, MESSAGE_INTERVAL)) { //FIXME change OR to AND, this was to speed up testing
     messagePacketCount = 0;
+    callback_status = true;
     int status = sendSBDMessage();
-    if (status != ISBD_CANCELLED) messageReady = false; // If callback cancelled transmission, new message is ready
+    callback_status = false;
+
+    // If callback cancelled transmission, new message is ready
+    if (status != ISBD_CANCELLED) messageReady = false;
   }
-*/
-  // Image capturing (unchanged)
+      // Image capturing (unchanged)
   if (hasSecondsPassed(last_image, PICTURE_INTERVAL)) {
     takePicture();
-    Serial.println(F("Image Taken"));
   }
-
-  setLights(true,0, 500);
+  setLights(true, 0, 200);
 }
 
 // Initialize Real-Time Clock - returns true if successful
@@ -350,8 +344,8 @@ bool initTemperatureSensor() {
 
 bool initIridium() {
   IridiumSerial.begin(19200);  // Iridium SBD baud rate
-  IridiumModem.begin();        // Initialize the Iridium IridiumModem
-  return true;
+  if (IridiumModem.begin() == ISBD_SUCCESS) return true;        // Initialize the Iridium IridiumModem
+  return false;
 }
 
 bool getDateTime(DataPacket &packet) {
@@ -492,6 +486,7 @@ int sendSBDMessage() {
 // Background Function that is ran behind the scenes while the rockblock is sending a message. Can terminate whole data sendin by returning false.
 // For more info see: https://github.com/mikalhart/IridiumSBD/blob/master/extras/IridiumSBD%20Arduino%20Library%20Documentation.pdf
 bool ISBDCallback() {
+  if (!callback_status) return true; // This line is so the function does nothing on iridium.begin() command. 
   setLights(false);
   if (hasSecondsPassed(last_sensor, SENSOR_INTERVAL * CALLBACK_INTERVALS_COEFFICIENT) && lineIndex < LINES_BUFFER_SIZE) {
       p = collectData();
@@ -512,7 +507,6 @@ bool ISBDCallback() {
       if (messagePacketCount == PACKETS_PER_MESSAGE) {
         messageReady = true; // clearly mark message as ready
       }
-
       totals.reset();
   }
 
@@ -529,7 +523,7 @@ bool ISBDCallback() {
 // Turns LED on/off with optional delays. Assumes active means low LED voltage. Delay taken in millis.
 void setLights(bool on, int startDelay = 0, int endDelay = 0) {
   delay(startDelay);
-  digitalWrite(LED_PIN, (on ? LOW : HIGH));  // LOW = ON (active-low)
+  digitalWrite(LED_PIN, (on ? HIGH : LOW));  // LOW = ON (active-low)
   delay(endDelay);
 }
 
@@ -577,7 +571,6 @@ bool writeDataPacket(DataPacket* packets, size_t packetCount) {
         "NO2,C2H5OH,VOC,CO,ozone,pressure,uv,lux,temperature,humidity"
       );
       dataFile.close();
-      Serial.println("Written Head");
     }
     lineCount = 0;
   }
@@ -637,18 +630,15 @@ void takePicture(){
   myCAM.clear_fifo_flag();
   //Start capture
   myCAM.start_capture();
-  Serial.println(F("start Capture"));
-  while(!myCAM.get_bit(ARDUCHIP_TRIG , CAP_DONE_MASK));
-  Serial.println(F("Capture Done."));  
+  while(!myCAM.get_bit(ARDUCHIP_TRIG , CAP_DONE_MASK)); 
   length = myCAM.read_fifo_length();
-  Serial.print(F("The fifo length is :"));
   Serial.println(length, DEC);
-  //Construct a file name
-  String imgname = "img" + String(k++) + ".jpg";
+  //Construct a file name using time
+  DateTime now = rtc.now();
+  String imgname = "p" + String(now.hour()) + String(now.minute()) + ".jpg";
   //Open the new file
-  outFile = SD.open(imgname.c_str(), O_WRITE | O_CREAT | O_TRUNC);
+  outFile = SD.open((String("Pictures/") + imgname).c_str(), O_WRITE | O_CREAT | O_TRUNC);
   if(!outFile){
-    Serial.println(F("File open failed"));
     return;
   }
   myCAM.CS_LOW();
@@ -666,7 +656,6 @@ void takePicture(){
       outFile.write(buf, i);    
       //Close the file
       outFile.close();
-      Serial.println(F("Image save OK."));
       is_header = false;
       i = 0;
     }  
@@ -712,7 +701,6 @@ bool initCamera() {
   temp = myCAM.read_reg(ARDUCHIP_TEST1);
   
   if (temp != 0x55){
-    Serial.println(F("SPI interface Error!"));
     return false;
   }
 
@@ -721,13 +709,10 @@ bool initCamera() {
     myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
     myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
     if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 ))){
-      Serial.println(F("Can't find OV2640 module!"));
       return false;
     }
 
   myCAM.set_format(JPEG);
   myCAM.InitCAM();
-  myCAM.OV2640_set_JPEG_size(OV2640_320x240);
+  myCAM.OV2640_set_JPEG_size(OV2640_1600x1200);
 }
-
-
